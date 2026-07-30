@@ -169,22 +169,30 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> Tuple[str, Callable
         "-cdc",
         action="store",
         metavar="attacker host",
-        help="Client-DC (cdc) enrollment attribute: the host the CA is told to chase for "
-        "DC identity data. Point it at a rogue oracle (see 'certipy chase')",
+        help=(
+            "Client-DC (cdc) enrollment attribute: the host the CA is told to "
+            "chase for DC identity data. Point it at a rogue oracle (see "
+            "'certipy chase')"
+        ),
     )
     chase_group.add_argument(
         "-rmd",
         action="store",
-        metavar="target DC dns",
-        help="Remote-domain (rmd) enrollment attribute: the DC principal the CA looks up "
-        "on the cdc host",
+        metavar="target dc dns",
+        help=(
+            "Remote-domain (rmd) enrollment attribute: the DC principal the CA "
+            "looks up on the cdc host"
+        ),
     )
     chase_group.add_argument(
         "-request-attribute",
         action="append",
         metavar="key:value",
-        help="Additional raw request attribute (repeatable), appended verbatim, e.g. "
-        "-request-attribute cdc:1.2.3.4 -request-attribute rmd:dc01.corp.local",
+        help=(
+            "Additional raw request attribute (repeatable), appended verbatim, "
+            "e.g. -request-attribute cdc:1.2.3.4 -request-attribute "
+            "rmd:dc01.corp.local"
+        ),
     )
 
     # Output options

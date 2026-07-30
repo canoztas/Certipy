@@ -22,7 +22,7 @@ import os
 import random
 import string
 import sys
-import time
+import threading
 from typing import Optional
 
 from impacket.ntlm import compute_nthash
@@ -64,7 +64,14 @@ def _first_raw(entry: LDAPEntry, key: str) -> Optional[bytes]:
 
 class Chase:
     """
-    Orchestrate the CVE-2026-54121 cdc-chase attack against AD CS.
+    Orchestrate the CVE-2026-54121 (Certighost) cdc-chase attack against AD CS.
+
+    This class ties the existing Certipy primitives (account creation,
+    certificate request and PKINIT authentication) together with the rogue
+    DC-identity oracle in certipy.lib.rogue. It discovers the CA and target
+    Domain Controller, stands up the oracle, submits a certificate request whose
+    cdc/rmd attributes redirect the CA's identity lookup to the oracle, and
+    optionally recovers the impersonated DC's NT hash via PKINIT.
     """
 
     def __init__(
@@ -451,8 +458,8 @@ class Chase:
             if self.server_only:
                 self._print_server_only_hint()
                 logging.info("Press Ctrl+C to stop the rogue oracle")
-                while True:
-                    time.sleep(0.2)
+                threading.Event().wait()
+                return True
             return self._request_and_pkinit()
         except KeyboardInterrupt:
             logging.info("Stopping the rogue oracle")

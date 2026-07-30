@@ -37,12 +37,16 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> Tuple[str, Callable
     """
     Add the chase command subparser to the main parser.
 
+    This function creates and configures a subparser for the chase command,
+    exposing the options that drive the CVE-2026-54121 cdc-chase attack.
+
     Args:
         subparsers: Parent parser to attach the subparser to
 
     Returns:
         Tuple of (command_name, entry_function) for command registration
     """
+    # Create the chase subparser with description
     subparser = subparsers.add_parser(
         NAME,
         help="Impersonate a DC via the AD CS cdc-chase (CVE-2026-54121)",
@@ -72,22 +76,28 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> Tuple[str, Callable
         action="store",
         metavar="template name",
         default="Machine",
-        help="Certificate template to request. Must build the subject from AD / "
-        "DNS name flags to trigger the chase (default: Machine)",
+        help=(
+            "Certificate template to request. Must build the subject from AD / "
+            "DNS name flags to trigger the chase (default: Machine)"
+        ),
     )
     chase_group.add_argument(
         "-target-account",
         action="store",
-        metavar="DC account",
-        help="Computer account to impersonate, e.g. 'DC01$' "
-        "(default: auto-discovered Domain Controller)",
+        metavar="dc account",
+        help=(
+            "Computer account to impersonate, e.g. 'DC01$' "
+            "(default: auto-discovered Domain Controller)"
+        ),
     )
     chase_group.add_argument(
         "-listener",
         action="store",
-        metavar="IP",
-        help="Attacker IP the CA is told to chase (cdc). Also the bind hint for "
-        "the rogue listeners (default: auto-detected)",
+        metavar="ip address",
+        help=(
+            "Attacker IP the CA is told to chase (cdc). Also the bind hint for "
+            "the rogue listeners (default: auto-detected)"
+        ),
     )
     chase_group.add_argument(
         "-out",
@@ -98,8 +108,10 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> Tuple[str, Callable
     chase_group.add_argument(
         "-server-only",
         action="store_true",
-        help="Only start the rogue DC-identity oracle and print the matching "
-        "'certipy req' command, instead of running the full attack",
+        help=(
+            "Only start the rogue DC-identity oracle and print the matching "
+            "'certipy req' command, instead of running the full attack"
+        ),
     )
     chase_group.add_argument(
         "-no-pkinit",
@@ -124,7 +136,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> Tuple[str, Callable
     account_group.add_argument(
         "-computer-hash",
         action="store",
-        metavar="NT hash",
+        metavar="nt hash",
         help="NT hash for -computer-name (alternative to -computer-pass)",
     )
 
